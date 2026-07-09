@@ -16,6 +16,7 @@ jest.mock('../bitbucket-client/index.js', () => ({
   PullRequestsService: {
     streamRawDiff2: jest.fn(),
     createComment2: jest.fn(),
+    updateComment2: jest.fn(),
     streamChanges1: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
@@ -821,6 +822,8 @@ describe('BitbucketService', () => {
         'Line comment',
         undefined, // parentId
         'src/test.js', // filePath
+        undefined, // startLine
+        undefined, // startLineType
         42, // line
         'ADDED' // lineType
       );
@@ -845,6 +848,236 @@ describe('BitbucketService', () => {
           }
         }
       );
+    });
+
+    it('should successfully post a multiline comment', async () => {
+      const mockComment = {
+        id: 12349,
+        text: 'Multiline comment',
+        author: { displayName: 'Test User' },
+        anchor: {
+          path: 'src/test.js',
+          diffType: 'EFFECTIVE',
+          line: 15,
+          lineType: 'ADDED',
+          fileType: 'TO',
+          multilineMarker: { startLine: 10, startLineType: 'ADDED' },
+          multilineSpan: { dstSpanStart: 10, dstSpanEnd: 15 }
+        }
+      };
+      (PullRequestsService.createComment2 as jest.Mock).mockResolvedValue(mockComment);
+
+      const result = await bitbucketService.postPullRequestComment(
+        mockProjectKey,
+        mockRepositorySlug,
+        mockPullRequestId,
+        'Multiline comment',
+        undefined,      // parentId
+        'src/test.js',  // filePath
+        10,             // startLine
+        undefined,      // startLineType (should default to lineType)
+        15,             // line (end line)
+        'ADDED'         // lineType
+      );
+
+      expect(result.success).toBe(true);
+      expect(result.data).toEqual({
+        id: 12349,
+        pending: false,
+        anchor: {
+          path: 'src/test.js',
+          line: 15,
+          lineType: 'ADDED',
+          startLine: 10,
+          startLineType: 'ADDED',
+        }
+      });
+      expect(PullRequestsService.createComment2).toHaveBeenCalledWith(
+        mockProjectKey,
+        mockPullRequestId,
+        mockRepositorySlug,
+        {
+          text: 'Multiline comment',
+          anchor: {
+            path: 'src/test.js',
+            diffType: 'EFFECTIVE',
+            line: 15,
+            lineType: 'ADDED',
+            fileType: 'TO',
+            multilineMarker: { startLine: 10, startLineType: 'ADDED' },
+            multilineSpan: { dstSpanStart: 10, dstSpanEnd: 15 }
+          }
+        }
+      );
+    });
+
+    it('should post a multiline comment with explicit startLineType', async () => {
+      const mockComment = {
+        id: 12350,
+        text: 'Mixed multiline comment',
+        author: { displayName: 'Test User' },
+        anchor: {
+          path: 'src/test.js',
+          diffType: 'EFFECTIVE',
+          line: 8,
+          lineType: 'ADDED',
+          fileType: 'TO',
+          multilineMarker: { startLine: 5, startLineType: 'CONTEXT' },
+          multilineSpan: { dstSpanStart: 5, dstSpanEnd: 8 }
+        }
+      };
+      (PullRequestsService.createComment2 as jest.Mock).mockResolvedValue(mockComment);
+
+      await bitbucketService.postPullRequestComment(
+        mockProjectKey,
+        mockRepositorySlug,
+        mockPullRequestId,
+        'Mixed multiline comment',
+        undefined,      // parentId
+        'src/test.js',  // filePath
+        5,              // startLine
+        'CONTEXT',      // startLineType
+        8,              // line (end line)
+        'ADDED'         // lineType
+      );
+
+      expect(PullRequestsService.createComment2).toHaveBeenCalledWith(
+        mockProjectKey,
+        mockPullRequestId,
+        mockRepositorySlug,
+        {
+          text: 'Mixed multiline comment',
+          anchor: {
+            path: 'src/test.js',
+            diffType: 'EFFECTIVE',
+            line: 8,
+            lineType: 'ADDED',
+            fileType: 'TO',
+            multilineMarker: { startLine: 5, startLineType: 'CONTEXT' },
+            multilineSpan: { dstSpanStart: 5, dstSpanEnd: 8 }
+          }
+        }
+      );
+    });
+
+    it('should normalize a reversed multiline range (startLine > line)', async () => {
+      (PullRequestsService.createComment2 as jest.Mock).mockResolvedValue({ id: 1, anchor: { path: 'src/test.js' } });
+
+      await bitbucketService.postPullRequestComment(
+        mockProjectKey,
+        mockRepositorySlug,
+        mockPullRequestId,
+        'Reversed range',
+        undefined,      // parentId
+        'src/test.js',  // filePath
+        15,             // startLine (greater than line)
+        'ADDED',        // startLineType
+        10,             // line (end line, smaller)
+        'ADDED'         // lineType
+      );
+
+      expect(PullRequestsService.createComment2).toHaveBeenCalledWith(
+        mockProjectKey,
+        mockPullRequestId,
+        mockRepositorySlug,
+        {
+          text: 'Reversed range',
+          anchor: {
+            path: 'src/test.js',
+            diffType: 'EFFECTIVE',
+            line: 15,
+            lineType: 'ADDED',
+            fileType: 'TO',
+            multilineMarker: { startLine: 10, startLineType: 'ADDED' },
+            multilineSpan: { dstSpanStart: 10, dstSpanEnd: 15 }
+          }
+        }
+      );
+    });
+
+    it('should anchor a REMOVED multiline range to the source file', async () => {
+      (PullRequestsService.createComment2 as jest.Mock).mockResolvedValue({ id: 1, anchor: { path: 'src/test.js' } });
+
+      await bitbucketService.postPullRequestComment(
+        mockProjectKey,
+        mockRepositorySlug,
+        mockPullRequestId,
+        'Removed range',
+        undefined,      // parentId
+        'src/test.js',  // filePath
+        2,              // startLine
+        'REMOVED',      // startLineType
+        5,              // line (end line)
+        'REMOVED'       // lineType
+      );
+
+      expect(PullRequestsService.createComment2).toHaveBeenCalledWith(
+        mockProjectKey,
+        mockPullRequestId,
+        mockRepositorySlug,
+        {
+          text: 'Removed range',
+          anchor: {
+            path: 'src/test.js',
+            diffType: 'EFFECTIVE',
+            line: 5,
+            lineType: 'REMOVED',
+            fileType: 'FROM',
+            multilineMarker: { startLine: 2, startLineType: 'REMOVED' },
+            multilineSpan: { srcSpanStart: 2, srcSpanEnd: 5 }
+          }
+        }
+      );
+    });
+
+    it('should warn when a multi-line suggestion is anchored to a single line', async () => {
+      (PullRequestsService.createComment2 as jest.Mock).mockResolvedValue({
+        id: 99,
+        anchor: { path: 'src/test.js', line: 5, lineType: 'ADDED' }
+      });
+
+      const result = await bitbucketService.postPullRequestComment(
+        mockProjectKey,
+        mockRepositorySlug,
+        mockPullRequestId,
+        '```suggestion\nconst a = 1;\nconst b = 2;\n```',
+        undefined,      // parentId
+        'src/test.js',  // filePath
+        undefined,      // startLine (single-line anchor — the bug shape)
+        undefined,      // startLineType
+        5,              // line
+        'ADDED'         // lineType
+      );
+
+      expect(result.success).toBe(true);
+      expect((result.data as any).warning).toMatch(/multi-line ```suggestion/);
+      // single-line anchor: no multiline fields sent
+      const sentAnchor = (PullRequestsService.createComment2 as jest.Mock).mock.calls[0][3].anchor;
+      expect(sentAnchor.multilineMarker).toBeUndefined();
+      expect(sentAnchor.multilineSpan).toBeUndefined();
+    });
+
+    it('should not warn when a multi-line suggestion has a proper multiline range', async () => {
+      (PullRequestsService.createComment2 as jest.Mock).mockResolvedValue({
+        id: 100,
+        anchor: { path: 'src/test.js', line: 5, lineType: 'ADDED', multilineMarker: { startLine: 4, startLineType: 'ADDED' } }
+      });
+
+      const result = await bitbucketService.postPullRequestComment(
+        mockProjectKey,
+        mockRepositorySlug,
+        mockPullRequestId,
+        '```suggestion\nconst a = 1;\nconst b = 2;\n```',
+        undefined,      // parentId
+        'src/test.js',  // filePath
+        4,              // startLine
+        'ADDED',        // startLineType
+        5,              // line
+        'ADDED'         // lineType
+      );
+
+      expect(result.success).toBe(true);
+      expect((result.data as any).warning).toBeUndefined();
     });
 
     it('should handle API errors gracefully', async () => {
@@ -1882,6 +2115,181 @@ describe('BitbucketService', () => {
     });
   });
 
+  describe('updatePullRequestComment', () => {
+    it('should resolve a task by sending state RESOLVED with the version', async () => {
+      const mockComment = { id: 500, version: 2, state: 'RESOLVED', text: 'Task body' };
+      (PullRequestsService.updateComment2 as jest.Mock).mockResolvedValue(mockComment);
+
+      const result = await bitbucketService.updatePullRequestComment(
+        mockProjectKey,
+        mockRepositorySlug,
+        mockPullRequestId,
+        '500',      // commentId
+        1,          // version
+        undefined,  // text
+        'RESOLVED'  // state
+      );
+
+      expect(result.success).toBe(true);
+      expect(PullRequestsService.updateComment2).toHaveBeenCalledWith(
+        mockProjectKey,
+        '500',
+        mockPullRequestId,
+        mockRepositorySlug,
+        { version: 1, state: 'RESOLVED' }
+      );
+    });
+
+    it('should edit the comment text without changing state or severity', async () => {
+      const mockComment = { id: 501, version: 3, text: 'Edited text' };
+      (PullRequestsService.updateComment2 as jest.Mock).mockResolvedValue(mockComment);
+
+      await bitbucketService.updatePullRequestComment(
+        mockProjectKey,
+        mockRepositorySlug,
+        mockPullRequestId,
+        '501',
+        2,
+        'Edited text'
+      );
+
+      expect(PullRequestsService.updateComment2).toHaveBeenCalledWith(
+        mockProjectKey,
+        '501',
+        mockPullRequestId,
+        mockRepositorySlug,
+        { version: 2, text: 'Edited text' }
+      );
+    });
+
+    it('should support combining text, state, and severity in a single update', async () => {
+      const mockComment = { id: 502, version: 4, text: 'New body', state: 'RESOLVED', severity: 'BLOCKER' };
+      (PullRequestsService.updateComment2 as jest.Mock).mockResolvedValue(mockComment);
+
+      await bitbucketService.updatePullRequestComment(
+        mockProjectKey,
+        mockRepositorySlug,
+        mockPullRequestId,
+        '502',
+        3,
+        'New body',
+        'RESOLVED',
+        'BLOCKER'
+      );
+
+      expect(PullRequestsService.updateComment2).toHaveBeenCalledWith(
+        mockProjectKey,
+        '502',
+        mockPullRequestId,
+        mockRepositorySlug,
+        { version: 3, text: 'New body', state: 'RESOLVED', severity: 'BLOCKER' }
+      );
+    });
+
+    it('should propagate API errors', async () => {
+      (PullRequestsService.updateComment2 as jest.Mock).mockRejectedValue(new Error('Conflict'));
+
+      const result = await bitbucketService.updatePullRequestComment(
+        mockProjectKey,
+        mockRepositorySlug,
+        mockPullRequestId,
+        '503',
+        1,
+        undefined,
+        'RESOLVED'
+      );
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Conflict');
+    });
+  });
+
+  describe('postPullRequestComment - severity flag', () => {
+    it('should include severity: BLOCKER in the request body when severity is BLOCKER', async () => {
+      const mockComment = { id: 200, text: 'Task comment', author: { displayName: 'Test User' } };
+      (PullRequestsService.createComment2 as jest.Mock).mockResolvedValue(mockComment);
+
+      const result = await bitbucketService.postPullRequestComment(
+        mockProjectKey,
+        mockRepositorySlug,
+        mockPullRequestId,
+        'Task comment',
+        undefined,  // parentId
+        undefined,  // filePath
+        undefined,  // startLine
+        undefined,  // startLineType
+        undefined,  // line
+        undefined,  // lineType
+        undefined,  // pending
+        'BLOCKER'   // severity
+      );
+
+      expect(result.success).toBe(true);
+      expect(PullRequestsService.createComment2).toHaveBeenCalledWith(
+        mockProjectKey,
+        mockPullRequestId,
+        mockRepositorySlug,
+        { text: 'Task comment', severity: 'BLOCKER' }
+      );
+    });
+
+    it('should NOT include severity in the request body when severity is omitted', async () => {
+      const mockComment = { id: 201, text: 'Normal comment', author: { displayName: 'Test User' } };
+      (PullRequestsService.createComment2 as jest.Mock).mockResolvedValue(mockComment);
+
+      await bitbucketService.postPullRequestComment(
+        mockProjectKey,
+        mockRepositorySlug,
+        mockPullRequestId,
+        'Normal comment'
+      );
+
+      expect(PullRequestsService.createComment2).toHaveBeenCalledWith(
+        mockProjectKey,
+        mockPullRequestId,
+        mockRepositorySlug,
+        { text: 'Normal comment' } // no severity field
+      );
+    });
+
+    it('should support severity BLOCKER combined with a file/line anchor', async () => {
+      const mockComment = { id: 202, text: 'Inline task', author: { displayName: 'Test User' } };
+      (PullRequestsService.createComment2 as jest.Mock).mockResolvedValue(mockComment);
+
+      await bitbucketService.postPullRequestComment(
+        mockProjectKey,
+        mockRepositorySlug,
+        mockPullRequestId,
+        'Inline task',
+        undefined,      // parentId
+        'src/index.ts', // filePath
+        undefined,      // startLine
+        undefined,      // startLineType
+        10,             // line
+        'ADDED',        // lineType
+        undefined,      // pending
+        'BLOCKER'       // severity
+      );
+
+      expect(PullRequestsService.createComment2).toHaveBeenCalledWith(
+        mockProjectKey,
+        mockPullRequestId,
+        mockRepositorySlug,
+        {
+          text: 'Inline task',
+          severity: 'BLOCKER',
+          anchor: {
+            path: 'src/index.ts',
+            diffType: 'EFFECTIVE',
+            line: 10,
+            lineType: 'ADDED',
+            fileType: 'TO'
+          }
+        }
+      );
+    });
+  });
+
   describe('postPullRequestComment - pending flag', () => {
     it('should include state: PENDING in the request body when pending is true', async () => {
       const mockComment = { id: 99, text: 'Draft comment', author: { displayName: 'Test User' } };
@@ -1894,6 +2302,8 @@ describe('BitbucketService', () => {
         'Draft comment',
         undefined, // parentId
         undefined, // filePath
+        undefined, // startLine
+        undefined, // startLineType
         undefined, // line
         undefined, // lineType
         true       // pending
@@ -1938,6 +2348,8 @@ describe('BitbucketService', () => {
         'Pending file comment',
         undefined,      // parentId
         'src/index.ts', // filePath
+        undefined,      // startLine
+        undefined,      // startLineType
         10,             // line
         'ADDED',        // lineType
         true            // pending
@@ -2171,6 +2583,65 @@ describe('BitbucketService', () => {
         'TEST', 'test-repo', undefined, undefined,
         'refs/heads/feature', 'refs/heads/main'
       );
+    });
+  });
+
+  describe('searchCode', () => {
+    const { request: mockRequest } = require('../bitbucket-client/core/request.js');
+
+    it('should search code with the default page size', async () => {
+      const mockData = { code: { count: 1, values: [{ repository: { slug: 'demo' } }] } };
+      mockRequest.mockResolvedValue(mockData);
+
+      const result = await bitbucketService.searchCode('app');
+
+      expect(result.success).toBe(true);
+      expect(result.data).toBe(mockData);
+      expect(mockRequest).toHaveBeenCalledWith(
+        expect.any(Object),
+        {
+          method: 'POST',
+          url: '/search/latest/search',
+          body: {
+            query: 'app',
+            entities: { code: {} },
+            limits: { primary: 25 }
+          },
+          mediaType: 'application/json',
+          errors: {
+            400: 'The search query was malformed.',
+            401: 'The currently authenticated user is not permitted to search.',
+          },
+        }
+      );
+    });
+
+    it('should pass explicit primary and secondary limits', async () => {
+      mockRequest.mockResolvedValue({ code: { count: 0, values: [] } });
+
+      await bitbucketService.searchCode('repo:demo TODO', 10, 5);
+
+      expect(mockRequest).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          method: 'POST',
+          url: '/search/latest/search',
+          body: {
+            query: 'repo:demo TODO',
+            entities: { code: {} },
+            limits: { primary: 10, secondary: 5 }
+          },
+        })
+      );
+    });
+
+    it('should handle errors when searching', async () => {
+      mockRequest.mockRejectedValue(new Error('API Error'));
+
+      const result = await bitbucketService.searchCode('app');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBeDefined();
     });
   });
 });

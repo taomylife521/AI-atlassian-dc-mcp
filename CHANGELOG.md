@@ -3,6 +3,102 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [0.26.0](https://github.com/b1ff/atlassian-dc-mcp/compare/v0.25.0...v0.26.0) (2026-07-04)
+
+
+### Features
+
+* **bitbucket:** add code search tool ([cd39fdb](https://github.com/b1ff/atlassian-dc-mcp/commit/cd39fdb9bfdf341645245d3c31edb4cfe59be319))
+
+
+
+
+
+# [0.25.0](https://github.com/b1ff/atlassian-dc-mcp/compare/v0.24.0...v0.25.0) (2026-06-18)
+
+
+### Features
+
+* **bitbucket:** support posting comments as tasks and updating comments ([e278f47](https://github.com/b1ff/atlassian-dc-mcp/commit/e278f47ea0f76245612dc0144bd9538e79f749f3))
+
+
+
+
+
+# [0.24.0](https://github.com/b1ff/atlassian-dc-mcp/compare/v0.23.0...v0.24.0) (2026-06-18)
+
+
+### Features
+
+* **confluence:** support sliced content body reads ([0f96852](https://github.com/b1ff/atlassian-dc-mcp/commit/0f968528a284b296e93717610acbadc9239f6d44))
+
+
+
+
+
+# [0.23.0](https://github.com/b1ff/atlassian-dc-mcp/compare/v0.22.0...v0.23.0) (2026-06-18)
+
+
+### Features
+
+* **jira:** add customFields support to transitionIssue ([31799d5](https://github.com/b1ff/atlassian-dc-mcp/commit/31799d54afe640960c799c253c79d5dcec079d15))
+
+
+
+
+
+# [0.22.0](https://github.com/b1ff/atlassian-dc-mcp/compare/v0.21.0...v0.22.0) (2026-06-18)
+
+
+### Features
+
+* **jira:** add jira_getIssueDevelopmentInfo tool ([f2e9f0d](https://github.com/b1ff/atlassian-dc-mcp/commit/f2e9f0d50d0ed65a8f214b6909ab3ef6fd3fd518))
+
+
+
+
+
+# [0.21.0](https://github.com/b1ff/atlassian-dc-mcp/compare/v0.20.1...v0.21.0) (2026-06-18)
+
+
+### Features
+
+* **bitbucket:** add multiline comment support for pull request comments ([edaf6ea](https://github.com/b1ff/atlassian-dc-mcp/commit/edaf6ea9a200afa811a8546f492d05fb37c4fe52))
+
+
+
+
+
+## [0.20.1](https://github.com/b1ff/atlassian-dc-mcp/compare/v0.20.0...v0.20.1) (2026-06-18)
+
+**Note:** Version bump only for package atlassian-dc-mcp
+
+
+
+
+
+# [0.20.0](https://github.com/b1ff/atlassian-dc-mcp/compare/v0.19.1...v0.20.0) (2026-06-08)
+
+
+### Features
+
+* **bitbucket:** support creating and updating pull requests as drafts ([190c19a](https://github.com/b1ff/atlassian-dc-mcp/commit/190c19a075285d18d8391bdb7fdd32feec605d32))
+
+
+
+
+
+## [0.19.1](https://github.com/b1ff/atlassian-dc-mcp/compare/v0.19.0...v0.19.1) (2026-05-24)
+
+
+### Bug Fixes
+
+* **bitbucket:** clarify that reviewers param requires 'name', not 'slug' ([59c45dc](https://github.com/b1ff/atlassian-dc-mcp/commit/59c45dc917d9abf05939335b4ea62671a462bcda))
+
+
+
+
+
 # [0.19.0](https://github.com/b1ff/atlassian-dc-mcp/compare/v0.18.0...v0.19.0) (2026-04-27)
 
 

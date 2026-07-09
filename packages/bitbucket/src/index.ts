@@ -129,10 +129,20 @@ server.tool(
 
 server.tool(
   "bitbucket_postPullRequestComment",
-  "Post a comment to a Bitbucket pull request. Use pending: true to create a draft comment that is only visible to you until you call bitbucket_submitPullRequestReview. NOTE: pending only works when filePath is provided (file-level or inline comments). True top-level PR comments (no filePath) are always posted live and cannot be drafted.",
+  "Post a comment to a Bitbucket pull request. Use pending: true to create a draft comment that is only visible to you until you call bitbucket_submitPullRequestReview. NOTE: pending only works when filePath is provided (file-level or inline comments). True top-level PR comments (no filePath) are always posted live and cannot be drafted. Use severity: 'BLOCKER' to post the comment as a task — tasks must be resolved before the PR can be merged.",
   bitbucketToolSchemas.postPullRequestComment,
-  async ({ projectKey, repositorySlug, pullRequestId, text, parentId, filePath, line, lineType, pending, output }) => {
-    const result = await bitbucketService.postPullRequestComment(projectKey, repositorySlug, pullRequestId, text, parentId, filePath, line, lineType, pending, output);
+  async ({ projectKey, repositorySlug, pullRequestId, text, parentId, filePath, startLine, startLineType, line, lineType, pending, severity, output }) => {
+    const result = await bitbucketService.postPullRequestComment(projectKey, repositorySlug, pullRequestId, text, parentId, filePath, startLine, startLineType, line, lineType, pending, severity, output);
+    return formatToolResponse(result);
+  }
+);
+
+server.tool(
+  "bitbucket_updatePullRequestComment",
+  "Update an existing pull request comment. Use to edit text, change severity, or change state. On a BLOCKER (task) comment, state: 'RESOLVED' ticks the task. NOTE: this is the task-tick, not the thread-level 'Resolve' button on regular comment threads — that is a separate concept (CommentThread.resolved) and is not exposed by this endpoint. Requires the current 'version' from optimistic locking; fetch it via bitbucket_getPR_CommentsAndAction or use the version returned when the comment was created.",
+  bitbucketToolSchemas.updatePullRequestComment,
+  async ({ projectKey, repositorySlug, pullRequestId, commentId, version, text, state, severity, output }) => {
+    const result = await bitbucketService.updatePullRequestComment(projectKey, repositorySlug, pullRequestId, commentId, version, text, state, severity, output);
     return formatToolResponse(result);
   }
 );
@@ -162,8 +172,8 @@ server.tool(
   "bitbucket_createPullRequest",
   "Create a new pull request in a Bitbucket repository. IMPORTANT: Before creating a PR, use bitbucket_getRequiredReviewers to fetch required reviewers for the source and target branches to ensure the PR is not created without mandatory reviewers.",
   bitbucketToolSchemas.createPullRequest,
-  async ({ projectKey, repositorySlug, title, description, fromRefId, toRefId, reviewers, output }) => {
-    const result = await bitbucketService.createPullRequest(projectKey, repositorySlug, title, description, fromRefId, toRefId, reviewers, output);
+  async ({ projectKey, repositorySlug, title, description, fromRefId, toRefId, reviewers, draft, output }) => {
+    const result = await bitbucketService.createPullRequest(projectKey, repositorySlug, title, description, fromRefId, toRefId, reviewers, draft, output);
     return formatToolResponse(result);
   }
 );
@@ -172,8 +182,8 @@ server.tool(
   "bitbucket_updatePullRequest",
   "Update the title, description, reviewers, destination branch or draft status of an existing pull request. IMPORTANT: You MUST first call bitbucket_getPullRequest to get the current 'version' number — this is required for optimistic locking and the call will fail without it. The reviewers parameter replaces ALL existing reviewers. If you want to preserve existing reviewers, include those from the current PR details along with any new ones you want to add.",
   bitbucketToolSchemas.updatePullRequest,
-  async ({ projectKey, repositorySlug, pullRequestId, version, title, description, reviewers, output }) => {
-    const result = await bitbucketService.updatePullRequest(projectKey, repositorySlug, pullRequestId, version, title, description, reviewers, output);
+  async ({ projectKey, repositorySlug, pullRequestId, version, title, description, reviewers, draft, output }) => {
+    const result = await bitbucketService.updatePullRequest(projectKey, repositorySlug, pullRequestId, version, title, description, reviewers, draft, output);
     return formatToolResponse(result);
   }
 );
@@ -204,6 +214,16 @@ server.tool(
   bitbucketToolSchemas.getDashboardPullRequests,
   async ({ role, state, closedSince, order, start, limit }) => {
     const result = await bitbucketService.getDashboardPullRequests(role, state, closedSince, order, start, limit);
+    return formatToolResponse(result);
+  }
+);
+
+server.tool(
+  "bitbucket_searchCode",
+  "Search code across Bitbucket. The query supports search modifiers like 'project:<key>', 'repo:<key>/<slug>', and 'ext:<extension>' to scope or filter results (e.g. 'project:TEST authenticate', 'repo:TEST/demo ext:js TODO'). NOTE: the 'repo:' modifier requires the project key — 'repo:projectkey/repositoryslug', not a bare slug. Returns matching files with hit contexts (snippets).",
+  bitbucketToolSchemas.searchCode,
+  async ({ query, limit, secondaryLimit }) => {
+    const result = await bitbucketService.searchCode(query, limit, secondaryLimit);
     return formatToolResponse(result);
   }
 );

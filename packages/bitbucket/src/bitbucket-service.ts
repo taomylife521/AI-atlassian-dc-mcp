@@ -23,6 +23,84 @@ function resolveToken(token: string | (() => string | undefined), missingTokenMe
   };
 }
 
+type DiffLineType = 'ADDED' | 'REMOVED' | 'CONTEXT';
+
+/**
+ * Build a Bitbucket DC inline comment anchor.
+ *
+ * For a multiline range, Bitbucket DC (>= 9.3.0) requires `multilineMarker` + `multilineSpan`.
+ * The legacy `multilineStartLine`/`multilineStartLineType`/`multilineAnchor`/`multilineDestinationRange`
+ * fields are silently ignored by the server, which then stores a single-line anchor — so a multiline
+ * `​```suggestion` only replaces its first line on Apply. Field names verified against BB DC 9.3.2.
+ */
+function buildCommentAnchor(params: {
+  filePath: string;
+  line?: number;
+  lineType?: DiffLineType;
+  startLine?: number;
+  startLineType?: DiffLineType;
+}): Record<string, any> {
+  const { filePath, line, lineType } = params;
+  const anchor: Record<string, any> = { path: filePath, diffType: 'EFFECTIVE' };
+  if (line === undefined || !lineType) {
+    return anchor;
+  }
+
+  if (params.startLine === undefined) {
+    anchor.line = line;
+    anchor.lineType = lineType;
+    anchor.fileType = lineType === 'REMOVED' ? 'FROM' : 'TO';
+    return anchor;
+  }
+
+  // Normalize so the marker sits on the lower line and `line` on the upper line.
+  let startLine = params.startLine;
+  let startLineType: DiffLineType = params.startLineType ?? lineType;
+  let endLine = line;
+  let endLineType: DiffLineType = lineType;
+  if (startLine > endLine) {
+    [startLine, endLine] = [endLine, startLine];
+    [startLineType, endLineType] = [endLineType, startLineType];
+  }
+
+  const fileType = endLineType === 'REMOVED' ? 'FROM' : 'TO';
+  anchor.line = endLine;
+  anchor.lineType = endLineType;
+  anchor.fileType = fileType;
+  anchor.multilineMarker = { startLine, startLineType };
+  anchor.multilineSpan =
+    fileType === 'FROM'
+      ? { srcSpanStart: startLine, srcSpanEnd: endLine }
+      : { dstSpanStart: startLine, dstSpanEnd: endLine };
+  return anchor;
+}
+
+const SUGGESTION_BLOCK_RE = /```suggestion\b[^\n]*\n([\s\S]*?)```/;
+
+/**
+ * Warn when a multi-line `​```suggestion` block is anchored to a single line: Bitbucket only replaces
+ * the anchored line on Apply, leaving the rest (duplicated code). Returns undefined when there is no
+ * concern. Heuristic — a 1-line anchor with a multi-line suggestion is the common failure shape.
+ */
+function multilineSuggestionWarning(text: string, startLine?: number): string | undefined {
+  if (startLine !== undefined) {
+    return undefined;
+  }
+  const match = SUGGESTION_BLOCK_RE.exec(text);
+  if (!match) {
+    return undefined;
+  }
+  const suggestionLineCount = match[1].replace(/\n$/, '').split('\n').length;
+  if (suggestionLineCount <= 1) {
+    return undefined;
+  }
+  return (
+    'The comment contains a multi-line ```suggestion block but is anchored to a single line. ' +
+    'On Apply, Bitbucket replaces only that one line and leaves the rest. To replace multiple lines, ' +
+    'set startLine (first replaced line) and line (last replaced line) to span the whole range.'
+  );
+}
+
 export class BitbucketService {
   private readonly getPageSize: () => number;
 
@@ -301,11 +379,14 @@ export class BitbucketService {
    * @param text The comment text
    * @param parentId Optional parent comment ID for replies
    * @param filePath Optional file path for file-specific comments
-   * @param line Optional line number for line-specific comments
-   * @param lineType Optional line type ('ADDED', 'REMOVED', 'CONTEXT') for line comments
+   * @param startLine Optional start line for multiline comments; when provided together with line, creates a range comment
+   * @param startLineType Optional line type for the start line; defaults to lineType if omitted
+   * @param line Optional end line number for line/multiline comments
+   * @param lineType Optional line type ('ADDED', 'REMOVED', 'CONTEXT') for the end line
    * @param pending Optional flag to create a pending (draft) comment, not visible to others until a review is submitted.
    *   Only works when filePath is provided (file-level or inline comments).
    *   Top-level PR comments (no filePath) are always posted live regardless of this flag.
+   * @param severity Optional severity for the comment. 'BLOCKER' posts the comment as a task that must be resolved before the PR can be merged. Defaults to 'NORMAL' (regular comment) when omitted.
    * @returns Promise with created comment data
    */
   async postPullRequestComment(
@@ -315,9 +396,12 @@ export class BitbucketService {
     text: string,
     parentId?: number,
     filePath?: string,
+    startLine?: number,
+    startLineType?: 'ADDED' | 'REMOVED' | 'CONTEXT',
     line?: number,
     lineType?: 'ADDED' | 'REMOVED' | 'CONTEXT',
     pending?: boolean,
+    severity?: 'NORMAL' | 'BLOCKER',
     output: BitbucketMutationOutputMode = 'ack'
   ) {
     projectKey = projectKey.toUpperCase();
@@ -325,6 +409,10 @@ export class BitbucketService {
     const comment: any = {
       text
     };
+
+    if (severity) {
+      comment.severity = severity;
+    }
 
     // Mark comment as pending (draft) — not visible to others until review is submitted
     // Note: Bitbucket DC uses state:'PENDING' not pending:true
@@ -339,18 +427,10 @@ export class BitbucketService {
 
     // Add anchor for file/line comments
     if (filePath) {
-      comment.anchor = {
-        path: filePath,
-        diffType: 'EFFECTIVE'
-      };
-
-      // Add line-specific anchor properties
-      if (line !== undefined && lineType) {
-        comment.anchor.line = line;
-        comment.anchor.lineType = lineType;
-        comment.anchor.fileType = 'TO'; // Default to destination file
-      }
+      comment.anchor = buildCommentAnchor({ filePath, line, lineType, startLine, startLineType });
     }
+
+    const suggestionWarning = filePath ? multilineSuggestionWarning(text, startLine) : undefined;
 
     const result = await handleApiOperation(
       () => PullRequestsService.createComment2(
@@ -360,6 +440,76 @@ export class BitbucketService {
         comment
       ),
       'Error posting pull request comment'
+    );
+
+    if (result.success && result.data && output !== 'full') {
+      return {
+        ...result,
+        data: {
+          ...shapePullRequestCommentAck(result.data),
+          ...(suggestionWarning ? { warning: suggestionWarning } : {}),
+        },
+      };
+    }
+
+    if (result.success && suggestionWarning) {
+      return { ...result, warning: suggestionWarning };
+    }
+
+    return result;
+  }
+
+  /**
+   * Update an existing pull request comment. Use this to edit text, change severity, or change state.
+   * On a BLOCKER (task) comment, setting state to 'RESOLVED' ticks the task. Note: this is NOT the same
+   * as the thread-level "Resolve" button on regular comment threads — that operates on CommentThread.resolved
+   * and is a separate concept not exposed by this endpoint.
+   * @param projectKey The project key
+   * @param repositorySlug The repository slug
+   * @param pullRequestId The pull request ID
+   * @param commentId The comment ID to update
+   * @param version The current version of the comment (required for optimistic locking)
+   * @param text Optional new comment text
+   * @param state Optional new state. On a BLOCKER comment, 'RESOLVED' ticks the task and 'OPEN' un-ticks it.
+   * @param severity Optional new severity. 'BLOCKER' converts a comment into a task, 'NORMAL' converts a task back to a regular comment.
+   * @returns Promise with updated comment data
+   */
+  async updatePullRequestComment(
+    projectKey: string,
+    repositorySlug: string,
+    pullRequestId: string,
+    commentId: string,
+    version: number,
+    text?: string,
+    state?: 'OPEN' | 'RESOLVED',
+    severity?: 'NORMAL' | 'BLOCKER',
+    output: BitbucketMutationOutputMode = 'ack'
+  ) {
+    projectKey = projectKey.toUpperCase();
+    repositorySlug = repositorySlug.toLowerCase();
+    const comment: any = { version };
+
+    if (text !== undefined) {
+      comment.text = text;
+    }
+
+    if (state) {
+      comment.state = state;
+    }
+
+    if (severity) {
+      comment.severity = severity;
+    }
+
+    const result = await handleApiOperation(
+      () => PullRequestsService.updateComment2(
+        projectKey,
+        commentId,
+        pullRequestId,
+        repositorySlug,
+        comment
+      ),
+      'Error updating pull request comment'
     );
 
     if (result.success && result.data && output !== 'full') {
@@ -506,6 +656,8 @@ export class BitbucketService {
    * @param fromRefId The source branch (e.g., 'refs/heads/feature-branch')
    * @param toRefId The destination branch (e.g., 'refs/heads/main')
    * @param reviewers Optional array of reviewer usernames
+   * @param draft Optional flag to create the pull request as a draft
+   * @param output Return a compact acknowledgement or the full API response. Defaults to 'ack'.
    * @returns Promise with created pull request data
    */
   async createPullRequest(
@@ -516,6 +668,7 @@ export class BitbucketService {
     fromRefId: string,
     toRefId: string,
     reviewers?: string[],
+    draft?: boolean,
     output: BitbucketMutationOutputMode = 'ack'
   ) {
     projectKey = projectKey.toUpperCase();
@@ -551,6 +704,10 @@ export class BitbucketService {
       }));
     }
 
+    if (draft !== undefined) {
+      pullRequestData.draft = draft;
+    }
+
     const result = await handleApiOperation(
       () => PullRequestsService.create(projectKey, repositorySlug, pullRequestData),
       'Error creating pull request'
@@ -575,6 +732,8 @@ export class BitbucketService {
    * @param title Optional new title for the pull request
    * @param description Optional new description for the pull request
    * @param reviewers Optional array of reviewer usernames to set
+   * @param draft Optional flag to mark the pull request as a draft or ready for review
+   * @param output Return a compact acknowledgement or the full API response. Defaults to 'ack'.
    * @returns Promise with updated pull request data
    */
   async updatePullRequest(
@@ -585,6 +744,7 @@ export class BitbucketService {
     title?: string,
     description?: string,
     reviewers?: string[],
+    draft?: boolean,
     output: BitbucketMutationOutputMode = 'ack'
   ) {
     projectKey = projectKey.toUpperCase();
@@ -607,6 +767,10 @@ export class BitbucketService {
           name: username
         }
       }));
+    }
+
+    if (draft !== undefined) {
+      pullRequestData.draft = draft;
     }
 
     const result = await handleApiOperation(
@@ -729,6 +893,46 @@ export class BitbucketService {
     return result;
   }
 
+  /**
+   * Search code across Bitbucket using the search REST module.
+   *
+   * The query string supports Bitbucket search modifiers, e.g. `project:TEST`,
+   * `repo:projectkey/repositoryslug` (e.g. `repo:TEST/demo`), `ext:js`, so scoping to a
+   * project or repository is done inside the query text. Note: `repo:` must include the
+   * project key (`repo:KEY/slug`); a bare `repo:slug` is rejected by the server.
+   *
+   * Note: the `/rest/search` endpoint is a separate Bitbucket REST module that is not part of
+   * the generated client, so this is issued via the low-level request helper (same approach as
+   * the dashboard/inbox endpoints).
+   *
+   * @param query The search query (may include modifiers like `repo:`, `project:`, `ext:`)
+   * @param limit Optional primary result limit (defaults to the package page size)
+   * @param secondaryLimit Optional secondary limit (number of hit contexts per match)
+   * @returns Promise with the code search results
+   */
+  async searchCode(query: string, limit?: number, secondaryLimit?: number) {
+    return handleApiOperation(
+      () => __request(OpenAPI, {
+        method: 'POST',
+        url: '/search/latest/search',
+        body: {
+          query,
+          entities: { code: {} },
+          limits: {
+            primary: limit ?? this.getPageSize(),
+            ...(secondaryLimit !== undefined ? { secondary: secondaryLimit } : {}),
+          },
+        },
+        mediaType: 'application/json',
+        errors: {
+          400: 'The search query was malformed.',
+          401: 'The currently authenticated user is not permitted to search.',
+        },
+      }),
+      'Error searching code'
+    );
+  }
+
   async validateSetup(): Promise<void> {
     await __request(OpenAPI, {
       method: 'GET',
@@ -816,9 +1020,23 @@ export const bitbucketToolSchemas = {
     text: z.string().describe("The comment text"),
     parentId: z.number().optional().describe("Parent comment ID for replies"),
     filePath: z.string().optional().describe("File path for file-specific comments"),
-    line: z.number().optional().describe("Line number for line-specific comments"),
-    lineType: z.enum(['ADDED', 'REMOVED', 'CONTEXT']).optional().describe("Line type for line comments"),
+    startLine: z.number().optional().describe("First line of a multiline range. Provide together with 'line' (the last line) to span multiple lines. REQUIRED for a multi-line ```suggestion: the anchored range (startLine..line) is exactly what 'Apply suggestion' replaces — omit it and only the single 'line' is replaced, leaving the rest. Requires Bitbucket DC >= 9.3.0 for multiline suggestions."),
+    startLineType: z.enum(['ADDED', 'REMOVED', 'CONTEXT']).optional().describe("Line type for the start line of a multiline range. Defaults to the same value as lineType if omitted."),
+    line: z.number().optional().describe("Single-line comments: the line. Multiline: the LAST line of the range (use startLine for the first). For a ```suggestion this is the last replaced line."),
+    lineType: z.enum(['ADDED', 'REMOVED', 'CONTEXT']).optional().describe("Line type for 'line' (the end line, or the only line for single-line comments). Use 'ADDED'/'CONTEXT' for the new/target file, 'REMOVED' for the original/source file."),
     pending: z.boolean().optional().describe("If true, creates a pending (draft) comment not visible to others until the review is submitted via bitbucket_submitPullRequestReview. Only works when filePath is provided — top-level PR comments (no filePath) are always posted live."),
+    severity: z.enum(['NORMAL', 'BLOCKER']).optional().describe("Comment severity. Use 'BLOCKER' to post the comment as a task that must be resolved before the PR can be merged. Defaults to 'NORMAL' (regular comment)."),
+    output: z.enum(['ack', 'full']).optional().describe("Return a compact acknowledgement or the full API response. Defaults to ack.")
+  },
+  updatePullRequestComment: {
+    projectKey: z.string().describe("The project key"),
+    repositorySlug: z.string().describe("The repository slug"),
+    pullRequestId: z.string().describe("The pull request ID"),
+    commentId: z.string().describe("The ID of the comment to update"),
+    version: z.number().describe("The current version of the comment, required for optimistic locking. Get it from bitbucket_getPR_CommentsAndAction or from the response of the original post/update."),
+    text: z.string().optional().describe("New comment text. Omit to leave unchanged."),
+    state: z.enum(['OPEN', 'RESOLVED']).optional().describe("New state. On a BLOCKER (task) comment, 'RESOLVED' ticks the task and 'OPEN' un-ticks it. This is NOT the thread-level 'Resolve' button on regular comment threads — that is a separate concept (CommentThread.resolved) and is not exposed by this endpoint."),
+    severity: z.enum(['NORMAL', 'BLOCKER']).optional().describe("New severity. Use 'BLOCKER' to convert a comment into a task, 'NORMAL' to convert it back."),
     output: z.enum(['ack', 'full']).optional().describe("Return a compact acknowledgement or the full API response. Defaults to ack.")
   },
   getUser: {
@@ -852,7 +1070,8 @@ export const bitbucketToolSchemas = {
     description: z.string().optional().describe("The pull request description"),
     fromRefId: z.string().describe("The source branch reference ID (e.g., 'refs/heads/feature-branch')"),
     toRefId: z.string().describe("The destination branch reference ID (e.g., 'refs/heads/main')"),
-    reviewers: z.array(z.string()).optional().describe("Optional array of reviewer usernames"),
+    draft: z.boolean().optional().describe("If true, the pull request is created as a draft (work-in-progress) and cannot be merged until marked ready."),
+    reviewers: z.array(z.string()).optional().describe("Optional array of reviewer usernames (use the 'name' field from Bitbucket user objects, not 'slug')"),
     output: z.enum(['ack', 'full']).optional().describe("Return a compact acknowledgement or the full API response. Defaults to ack.")
   },
   updatePullRequest: {
@@ -862,7 +1081,8 @@ export const bitbucketToolSchemas = {
     version: z.number().describe("The current version of the pull request (required for optimistic locking). Obtain this by calling bitbucket_getPullRequest first."),
     title: z.string().optional().describe("The new title for the pull request"),
     description: z.string().optional().describe("The new description for the pull request"),
-    reviewers: z.array(z.string()).optional().describe("Optional array of reviewer usernames to set"),
+    draft: z.boolean().optional().describe("If provided, sets the draft (work-in-progress) status of the pull request. Pass true to mark as draft, false to mark as ready for review."),
+    reviewers: z.array(z.string()).optional().describe("Optional array of reviewer usernames to set (use the 'name' field from Bitbucket user objects, not 'slug')"),
     output: z.enum(['ack', 'full']).optional().describe("Return a compact acknowledgement or the full API response. Defaults to ack.")
   },
   getRequiredReviewers: {
@@ -884,5 +1104,10 @@ export const bitbucketToolSchemas = {
   getInboxPullRequests: {
     start: z.number().optional().describe("Start number for the page (inclusive). If not passed, first page is assumed"),
     limit: z.number().optional().describe("Number of items to return. If not passed, the package default page size is used.")
+  },
+  searchCode: {
+    query: z.string().describe("The search query. Supports Bitbucket search modifiers, e.g. 'project:TEST authenticate', 'repo:TEST/demo TODO' (the repo modifier must be 'repo:projectkey/repositoryslug'), 'ext:ts useState'. Scope to a project or repository inside the query text."),
+    limit: z.number().optional().describe("Maximum number of matching files to return. If not passed, the package default page size is used."),
+    secondaryLimit: z.number().optional().describe("Maximum number of hit contexts (matching code snippets) to return per file")
   }
 };
