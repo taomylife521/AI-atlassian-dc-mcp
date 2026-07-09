@@ -2,8 +2,8 @@ import { File } from 'node:buffer';
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { z } from 'zod';
-import { handleApiOperation, resolveOpenApiBase } from '@atlassian-dc-mcp/common';
-import { IssueService, MyselfService, OpenAPI, SearchService } from './jira-client/index.js';
+import { downloadAttachment, handleApiOperation, resolveOpenApiBase, type AttachmentDownloadOptions } from '@atlassian-dc-mcp/common';
+import { AttachmentService, IssueService, MyselfService, OpenAPI, SearchService } from './jira-client/index.js';
 import type { StringList } from './jira-client/models/StringList.js';
 import { getDefaultPageSize, getMissingConfig, JIRA_PRODUCT } from './config.js';
 
@@ -27,6 +27,7 @@ function resolveToken(token: string | (() => string | undefined), missingTokenMe
 
 export class JiraService {
   private readonly getPageSize: () => number;
+  private readonly tokenProvider: string | (() => string | undefined);
 
   constructor(
     host: string | undefined,
@@ -43,6 +44,7 @@ export class JiraService {
     OpenAPI.TOKEN = resolveToken(token, 'Missing required environment variable: JIRA_API_TOKEN');
     OpenAPI.VERSION = '2';
     OpenAPI.HEADERS = { 'X-Atlassian-Token': 'no-check' };
+    this.tokenProvider = token;
     this.getPageSize = getPageSize;
   }
 
@@ -160,6 +162,67 @@ export class JiraService {
     );
   }
 
+  /**
+   * Download attachments from a JIRA issue, or a single attachment by its id.
+   * Exactly one of `attachmentId` or `issueKey` must be provided.
+   * @param params.attachmentId Download a single attachment by its numeric id
+   * @param params.issueKey Download attachments from this issue (optionally filtered by filename)
+   * @param params.filename When using issueKey, download only attachments with this exact filename
+   * @param params.options Save-to-disk and inline-content options (see AttachmentDownloadOptions)
+   */
+  async downloadAttachments(params: {
+    attachmentId?: string;
+    issueKey?: string;
+    filename?: string;
+    options?: AttachmentDownloadOptions;
+  }) {
+    return handleApiOperation(async () => {
+      const beans = await this.resolveAttachmentBeans(params);
+      const attachments = [];
+      for (const bean of beans) {
+        const url = bean?.content;
+        if (!url) {
+          throw new Error(`Attachment "${bean?.filename ?? bean?.id}" has no download URL`);
+        }
+        attachments.push(
+          await downloadAttachment({
+            url,
+            token: this.tokenProvider,
+            filename: bean?.filename ?? String(bean?.id ?? 'attachment'),
+            mediaType: bean?.mimeType,
+            options: params.options,
+          }),
+        );
+      }
+      return { count: attachments.length, attachments };
+    }, 'Error downloading attachment');
+  }
+
+  private async resolveAttachmentBeans(params: {
+    attachmentId?: string;
+    issueKey?: string;
+    filename?: string;
+  }): Promise<Array<Record<string, any>>> {
+    if (params.attachmentId) {
+      const bean = await AttachmentService.getAttachment(params.attachmentId);
+      return [bean as Record<string, any>];
+    }
+    if (!params.issueKey) {
+      throw new Error('Either attachmentId or issueKey must be provided');
+    }
+    const issue = await IssueService.getIssue(params.issueKey, undefined, toIssueFieldSelection(['attachment']));
+    const all = (((issue as any)?.fields?.attachment) ?? []) as Array<Record<string, any>>;
+    const filtered = params.filename ? all.filter((a) => a?.filename === params.filename) : all;
+    if (filtered.length === 0) {
+      throw new Error(
+        params.filename
+          ? `No attachment named "${params.filename}" found on issue ${params.issueKey}`
+          : `No attachments found on issue ${params.issueKey}`,
+      );
+    }
+    return filtered;
+  }
+
   async validateSetup(): Promise<void> {
     await MyselfService.getUser();
   }
@@ -218,5 +281,14 @@ export const jiraToolSchemas = {
     issueKey: z.string().describe("JIRA issue key (e.g., PROJ-123)"),
     filePath: z.string().describe("Absolute local filesystem path of the file to upload"),
     filename: z.string().optional().describe("Override for the attachment filename (defaults to the basename of filePath)")
+  },
+  downloadAttachment: {
+    issueKey: z.string().optional().describe("JIRA issue key (e.g., PROJ-123) whose attachment(s) to download. Provide either issueKey or attachmentId."),
+    attachmentId: z.string().optional().describe("Numeric id of a single attachment to download. Provide either attachmentId or issueKey."),
+    filename: z.string().optional().describe("When using issueKey, download only attachments with this exact filename. If omitted, all attachments on the issue are downloaded."),
+    saveDir: z.string().optional().describe("Absolute local directory to save the attachment(s) into. The attachment filename is used as the file name. Preferred when downloading multiple files."),
+    savePath: z.string().optional().describe("Absolute local file path to save a single attachment to. Overrides saveDir. Only meaningful when downloading a single attachment."),
+    returnContent: z.enum(['none', 'base64', 'text']).optional().describe("Whether to embed the file bytes in the response: 'none' (default), 'base64' for binary, or 'text' for UTF-8 text. Combine with saveDir/savePath to also save to disk."),
+    maxInlineBytes: z.number().optional().describe("Maximum bytes to embed inline when returnContent is base64/text. Larger files are saved (if a path is given) but not embedded. Defaults to 1 MiB.")
   }
 };

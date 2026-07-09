@@ -117,4 +117,19 @@ server.tool(
   }
 );
 
+server.tool(
+  "jira_downloadAttachment",
+  `Download attachment(s) from a JIRA issue in the ${jiraInstanceType}, by issue key (optionally filtered by filename) or by a single attachment id. Can save to a local path and/or return the file content inline (base64 or text). Useful for inspecting a file or moving it elsewhere (e.g. re-uploading to a Confluence page).`,
+  jiraToolSchemas.downloadAttachment,
+  async ({ issueKey, attachmentId, filename, saveDir, savePath, returnContent, maxInlineBytes }) => {
+    const result = await jiraService.downloadAttachments({
+      issueKey,
+      attachmentId,
+      filename,
+      options: { saveDir, savePath, returnContent, maxInlineBytes },
+    });
+    return formatToolResponse(result);
+  }
+);
+
 await connectServer(server);

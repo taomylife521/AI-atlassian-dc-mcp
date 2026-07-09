@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 export * from './api-error-handler.js'
+export * from './attachment-download.js'
 export * from './config/index.js';
 export { runSetup, runSetupCli } from './setup-cli.js';
 export { describeValidationError } from './setup/describe-error.js';

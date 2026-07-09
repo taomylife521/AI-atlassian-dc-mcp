@@ -247,3 +247,25 @@ Parameters:
 - `issueKey` (string, required): The issue key (e.g., "PROJECT-123")
 - `transitionId` (string, required): Transition ID returned by `jira_getTransitions`
 - `fields` (object, optional): Additional fields required by the transition screen
+
+#### 9. jira_uploadAttachment
+
+Upload a local file as an attachment to a JIRA issue.
+
+Parameters:
+- `issueKey` (string, required): The issue key (e.g., "PROJECT-123")
+- `filePath` (string, required): Absolute local filesystem path of the file to upload
+- `filename` (string, optional): Override for the attachment filename (defaults to the basename of `filePath`)
+
+#### 10. jira_downloadAttachment
+
+Download attachment(s) from a JIRA issue, by issue key (optionally filtered by filename) or by a single attachment id. Can save to a local path and/or return the file content inline (base64 or text) — useful for inspecting a file or moving it elsewhere (e.g. re-uploading to a Confluence page).
+
+Parameters:
+- `issueKey` (string, optional): The issue key (e.g., "PROJECT-123") whose attachment(s) to download. Provide either `issueKey` or `attachmentId`.
+- `attachmentId` (string, optional): Numeric id of a single attachment to download. Provide either `attachmentId` or `issueKey`.
+- `filename` (string, optional): When using `issueKey`, download only attachments with this exact filename. If omitted, all attachments on the issue are downloaded.
+- `saveDir` (string, optional): Absolute local directory to save the attachment(s) into. The attachment filename is used as the file name. Preferred when downloading multiple files.
+- `savePath` (string, optional): Absolute local file path to save a single attachment to. Overrides `saveDir`.
+- `returnContent` (`none` | `base64` | `text`, optional): Whether to embed the file bytes in the response. Defaults to `none`. Combine with `saveDir`/`savePath` to also save to disk.
+- `maxInlineBytes` (number, optional): Maximum bytes to embed inline when `returnContent` is `base64`/`text`. Larger files are saved (if a path is given) but not embedded. Defaults to 1 MiB.
