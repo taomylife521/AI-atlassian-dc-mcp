@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { handleApiOperation, resolveOpenApiBase } from '@atlassian-dc-mcp/common';
-import { IssueService, MyselfService, OpenAPI, SearchService } from './jira-client/index.js';
+import { IssueLinkService, IssueLinkTypeService, IssueService, MyselfService, OpenAPI, SearchService } from './jira-client/index.js';
 import { request as __request } from './jira-client/core/request.js';
 import type { StringList } from './jira-client/models/StringList.js';
 import { getDefaultPageSize, getMissingConfig, JIRA_PRODUCT } from './config.js';
@@ -177,6 +177,36 @@ export class JiraService {
     }, 'Error transitioning issue');
   }
 
+  async getIssueLinkTypes() {
+    return handleApiOperation(
+      () => IssueLinkTypeService.getIssueLinkTypes(),
+      'Error getting issue link types'
+    );
+  }
+
+  async linkIssues(params: {
+    inwardIssueKey: string;
+    outwardIssueKey: string;
+    linkType: string;
+    comment?: string;
+  }) {
+    return handleApiOperation(() => {
+      return IssueLinkService.linkIssues({
+        type: { name: params.linkType },
+        inwardIssue: { key: params.inwardIssueKey },
+        outwardIssue: { key: params.outwardIssueKey },
+        ...(params.comment ? { comment: { body: params.comment } } : {}),
+      });
+    }, 'Error linking issues');
+  }
+
+  async unlinkIssues(linkId: string) {
+    return handleApiOperation(
+      () => IssueLinkService.deleteIssueLink(linkId),
+      'Error unlinking issues'
+    );
+  }
+
   async validateSetup(): Promise<void> {
     await MyselfService.getUser();
   }
@@ -236,5 +266,15 @@ export const jiraToolSchemas = {
     transitionId: z.string().describe("The ID of the transition to perform. Use jira_getTransitions to find available transitions and their IDs."),
     fields: z.record(z.any()).optional().describe("Optional fields required by the transition screen. Use jira_getTransitions to see which fields are available for each transition."),
     customFields: z.record(z.any()).optional().describe("Optional fields merged into the JIRA transition payload. Can be used for update operations such as comments. Example: {'update': {'comment': [{'add': {'body': 'text'}}]}}")
+  },
+  getIssueLinkTypes: {},
+  linkIssues: {
+    inwardIssueKey: z.string().describe("Key of the inward issue (the one the inward link description applies to, e.g. the issue that 'is blocked by'). Example: PROJ-123"),
+    outwardIssueKey: z.string().describe("Key of the outward issue (the one the outward link description applies to, e.g. the issue that 'blocks'). Example: PROJ-456"),
+    linkType: z.string().describe("Name of the issue link type to apply (e.g. 'Blocks', 'Relates', 'Duplicate'). Use jira_getIssueLinkTypes to discover valid names for this JIRA installation."),
+    comment: z.string().optional().describe("Optional comment added to the inward issue when the link is created, in JIRA Wiki Markup.")
+  },
+  unlinkIssues: {
+    linkId: z.string().describe("The id of the issue link to delete. Link ids can be found in the 'issuelinks' field of an issue (retrieve it via jira_getIssue with the 'issuelinks' field).")
   }
 };

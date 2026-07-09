@@ -117,4 +117,34 @@ server.tool(
   }
 );
 
+server.tool(
+  "jira_getIssueLinkTypes",
+  `Get the list of available issue link types (e.g. Blocks, Relates, Duplicate) in the ${jiraInstanceType}. Use this to discover valid link type names before calling jira_linkIssues.`,
+  jiraToolSchemas.getIssueLinkTypes,
+  async () => {
+    const result = await jiraService.getIssueLinkTypes();
+    return formatToolResponse(result);
+  }
+);
+
+server.tool(
+  "jira_linkIssues",
+  `Create a link between two JIRA issues in the ${jiraInstanceType}. Use jira_getIssueLinkTypes to find valid link type names.`,
+  jiraToolSchemas.linkIssues,
+  async (params) => {
+    const result = await jiraService.linkIssues(params);
+    return formatToolResponse(result);
+  }
+);
+
+server.tool(
+  "jira_unlinkIssues",
+  `Delete an existing link between two JIRA issues in the ${jiraInstanceType}. Requires the issue link id (found in the 'issuelinks' field of an issue).`,
+  jiraToolSchemas.unlinkIssues,
+  async ({ linkId }) => {
+    const result = await jiraService.unlinkIssues(linkId);
+    return formatToolResponse(result);
+  }
+);
+
 await connectServer(server);
