@@ -3,6 +3,18 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [0.28.0](https://github.com/b1ff/atlassian-dc-mcp/compare/v0.27.0...v0.28.0) (2026-07-22)
+
+
+### Features
+
+* **attachments:** sandbox local filesystem access behind an opt-in gateway ([2a22547](https://github.com/b1ff/atlassian-dc-mcp/commit/2a22547292a390a032642ad09bd09ede0808e9d7))
+* **jira:** add jira_downloadAttachment tool ([31cbeef](https://github.com/b1ff/atlassian-dc-mcp/commit/31cbeefd00fde37b1245efbe975ea4d63db46758))
+
+
+
+
+
 # [0.27.0](https://github.com/b1ff/atlassian-dc-mcp/compare/v0.26.0...v0.27.0) (2026-07-18)
 
 **Note:** Version bump only for package @atlassian-dc-mcp/common
