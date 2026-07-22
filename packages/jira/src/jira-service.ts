@@ -1,6 +1,17 @@
+import { File } from 'node:buffer';
+import { readFile } from 'node:fs/promises';
+import { basename } from 'node:path';
 import { z } from 'zod';
-import { handleApiOperation, resolveOpenApiBase } from '@atlassian-dc-mcp/common';
-import { IssueLinkService, IssueLinkTypeService, IssueService, MyselfService, OpenAPI, SearchService } from './jira-client/index.js';
+import {
+  downloadAttachment,
+  handleApiOperation,
+  resolveDownloadDestination,
+  resolveOpenApiBase,
+  resolveUploadSource,
+  type AttachmentContentEncoding,
+  type AttachmentGatewaySide,
+} from '@atlassian-dc-mcp/common';
+import { AttachmentService, IssueLinkService, IssueLinkTypeService, IssueService, MyselfService, OpenAPI, SearchService } from './jira-client/index.js';
 import { request as __request } from './jira-client/core/request.js';
 import type { StringList } from './jira-client/models/StringList.js';
 import { getDefaultPageSize, getMissingConfig, JIRA_PRODUCT } from './config.js';
@@ -28,6 +39,7 @@ function resolveToken(token: string | (() => string | undefined), missingTokenMe
 
 export class JiraService {
   private readonly getPageSize: () => number;
+  private readonly tokenProvider: string | (() => string | undefined);
 
   constructor(
     host: string | undefined,
@@ -43,6 +55,8 @@ export class JiraService {
     });
     OpenAPI.TOKEN = resolveToken(token, 'Missing required environment variable: JIRA_API_TOKEN');
     OpenAPI.VERSION = '2';
+    OpenAPI.HEADERS = { 'X-Atlassian-Token': 'no-check' };
+    this.tokenProvider = token;
     this.getPageSize = getPageSize;
   }
 
@@ -177,6 +191,104 @@ export class JiraService {
     }, 'Error transitioning issue');
   }
 
+  async uploadAttachment(issueKey: string, sourcePath: string, uploadSide: AttachmentGatewaySide, filename?: string) {
+    return handleApiOperation(async () => {
+      const { absolutePath } = await resolveUploadSource({ requestedPath: sourcePath, side: uploadSide });
+      const buffer = await readFile(absolutePath);
+      const name = filename || basename(absolutePath);
+      const file = new File([buffer], name);
+      // IssueService types formData as Blob, but the API expects { file } — getFormData handles File via isBlob()
+      return IssueService.addAttachment(issueKey, { file } as any);
+    }, 'Error uploading attachment');
+  }
+
+  /**
+   * Download attachments from a JIRA issue, or a single attachment by its id.
+   * Exactly one of `attachmentId` or `issueKey` must be provided.
+   * @param params.attachmentId Download a single attachment by its numeric id
+   * @param params.issueKey Download attachments from this issue (optionally filtered by filename)
+   * @param params.filename When using issueKey, download only attachments with this exact filename
+   * @param params.save Whether to write the attachment(s) to the operator-configured download directory
+   * @param params.saveName Optional file name (basename only) when saving a single attachment
+   * @param params.returnContent Whether/how to embed the bytes inline in the response
+   * @param params.maxInlineBytes Inline embedding cap
+   * @param params.downloadSide Resolved download gateway (roots, size limit, enabled flag)
+   */
+  async downloadAttachments(params: {
+    attachmentId?: string;
+    issueKey?: string;
+    filename?: string;
+    save?: boolean;
+    saveName?: string;
+    returnContent?: AttachmentContentEncoding;
+    maxInlineBytes?: number;
+    downloadSide: AttachmentGatewaySide;
+  }) {
+    return handleApiOperation(async () => {
+      if (params.save && !params.downloadSide.enabled) {
+        throw new Error(
+          'Saving attachments to disk is disabled on this server. Enable it with ' +
+            'JIRA_ATTACHMENTS_DOWNLOAD_ENABLED and configure a download directory.',
+        );
+      }
+      const beans = await this.resolveAttachmentBeans(params);
+      const multiple = beans.length > 1;
+      const attachments = [];
+      for (const bean of beans) {
+        const url = bean?.content;
+        if (!url) {
+          throw new Error(`Attachment "${bean?.filename ?? bean?.id}" has no download URL`);
+        }
+        const filename = bean?.filename ?? String(bean?.id ?? 'attachment');
+        let destination: string | undefined;
+        if (params.save) {
+          const requestedName = multiple ? filename : params.saveName ?? filename;
+          destination = await resolveDownloadDestination({ requestedName, side: params.downloadSide });
+        }
+        attachments.push(
+          await downloadAttachment({
+            url,
+            token: this.tokenProvider,
+            filename,
+            mediaType: bean?.mimeType,
+            options: {
+              destination,
+              returnContent: params.returnContent,
+              maxInlineBytes: params.maxInlineBytes,
+              maxDownloadBytes: params.downloadSide.maxBytes,
+            },
+          }),
+        );
+      }
+      return { count: attachments.length, attachments };
+    }, 'Error downloading attachment');
+  }
+
+  private async resolveAttachmentBeans(params: {
+    attachmentId?: string;
+    issueKey?: string;
+    filename?: string;
+  }): Promise<Array<Record<string, any>>> {
+    if (params.attachmentId) {
+      const bean = await AttachmentService.getAttachment(params.attachmentId);
+      return [bean as Record<string, any>];
+    }
+    if (!params.issueKey) {
+      throw new Error('Either attachmentId or issueKey must be provided');
+    }
+    const issue = await IssueService.getIssue(params.issueKey, undefined, toIssueFieldSelection(['attachment']));
+    const all = (((issue as any)?.fields?.attachment) ?? []) as Array<Record<string, any>>;
+    const filtered = params.filename ? all.filter((a) => a?.filename === params.filename) : all;
+    if (filtered.length === 0) {
+      throw new Error(
+        params.filename
+          ? `No attachment named "${params.filename}" found on issue ${params.issueKey}`
+          : `No attachments found on issue ${params.issueKey}`,
+      );
+    }
+    return filtered;
+  }
+
   async getIssueLinkTypes() {
     return handleApiOperation(
       () => IssueLinkTypeService.getIssueLinkTypes(),
@@ -266,6 +378,22 @@ export const jiraToolSchemas = {
     transitionId: z.string().describe("The ID of the transition to perform. Use jira_getTransitions to find available transitions and their IDs."),
     fields: z.record(z.any()).optional().describe("Optional fields required by the transition screen. Use jira_getTransitions to see which fields are available for each transition."),
     customFields: z.record(z.any()).optional().describe("Optional fields merged into the JIRA transition payload. Can be used for update operations such as comments. Example: {'update': {'comment': [{'add': {'body': 'text'}}]}}")
+  },
+  uploadAttachment: {
+    issueKey: z.string().describe("JIRA issue key (e.g., PROJ-123)"),
+    sourcePath: z.string().describe("Path to the file to upload, relative to a server-configured attachment upload directory. Absolute paths and '..' segments are rejected; symlinks and non-regular files are refused."),
+    filename: z.string().optional().describe("Override for the attachment filename (defaults to the basename of sourcePath)")
+  },
+  downloadAttachment: {
+    issueKey: z.string().optional().describe("JIRA issue key (e.g., PROJ-123) whose attachment(s) to download. Provide either issueKey or attachmentId."),
+    attachmentId: z.string().optional().describe("Numeric id of a single attachment to download. Provide either attachmentId or issueKey."),
+    filename: z.string().optional().describe("When using issueKey, download only attachments with this exact filename. If omitted, all attachments on the issue are downloaded."),
+    returnContent: z.enum(['none', 'base64', 'text']).optional().describe("Whether to embed the file bytes in the response: 'none' (default), 'base64' for binary, or 'text' for UTF-8 text."),
+    maxInlineBytes: z.number().optional().describe("Maximum bytes to embed inline when returnContent is base64/text. Larger files are omitted from the inline content. Defaults to 1 MiB.")
+  },
+  downloadAttachmentSaveFields: {
+    save: z.boolean().optional().describe("Save the attachment(s) into the server-configured download directory. Requires disk downloads to be enabled on the server."),
+    saveName: z.string().optional().describe("Optional file name (no directories) to use when saving a single attachment; defaults to the attachment's own name. Existing files are never overwritten.")
   },
   getIssueLinkTypes: {},
   linkIssues: {
