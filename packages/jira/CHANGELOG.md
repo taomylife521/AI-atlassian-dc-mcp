@@ -3,6 +3,22 @@
 All notable changes to this project will be documented in this file.
 See [Conventional Commits](https://conventionalcommits.org) for commit guidelines.
 
+# [0.27.0](https://github.com/b1ff/atlassian-dc-mcp/compare/v0.26.0...v0.27.0) (2026-07-18)
+
+
+### Bug Fixes
+
+* **jira:** avoid JSON parse error on empty response bodies ([3c55b59](https://github.com/b1ff/atlassian-dc-mcp/commit/3c55b591bd75ad850d8952d566277ba151b905d2))
+
+
+### Features
+
+* **jira:** add issue link and unlink tools ([217701e](https://github.com/b1ff/atlassian-dc-mcp/commit/217701ee570426c391999f4c8ec89d391977b84a))
+
+
+
+
+
 # [0.26.0](https://github.com/b1ff/atlassian-dc-mcp/compare/v0.25.0...v0.26.0) (2026-07-04)
 
 **Note:** Version bump only for package @atlassian-dc-mcp/jira

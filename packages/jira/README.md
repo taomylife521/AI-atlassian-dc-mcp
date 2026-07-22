@@ -115,6 +115,7 @@ Alternatively, you can use `JIRA_API_BASE_PATH` instead of `JIRA_HOST` to specif
 - Get issue comments
 - Create and update issues
 - Add comments to issues
+- Link and unlink issues
 
 ## Setup
 
@@ -279,7 +280,30 @@ Parameters:
 - `transitionId` (string, required): Transition ID returned by `jira_getTransitions`
 - `fields` (object, optional): Additional fields required by the transition screen
 
-#### 9. jira_uploadAttachment
+#### 9. jira_getIssueLinkTypes
+
+Get the list of available issue link types (e.g., "Blocks", "Relates", "Duplicate") in the JIRA Data Center edition instance. Use this to discover valid link type names before calling `jira_linkIssues`.
+
+Parameters: none
+
+#### 10. jira_linkIssues
+
+Create a link between two JIRA issues in the JIRA Data Center edition instance.
+
+Parameters:
+- `inwardIssueKey` (string, required): Key of the inward issue — the one the inward link description applies to (e.g., the issue that "is blocked by"). Example: "PROJECT-123"
+- `outwardIssueKey` (string, required): Key of the outward issue — the one the outward link description applies to (e.g., the issue that "blocks"). Example: "PROJECT-456"
+- `linkType` (string, required): Name of the issue link type to apply (e.g., "Blocks", "Relates"). Use `jira_getIssueLinkTypes` to discover valid names for this JIRA installation.
+- `comment` (string, optional): Comment added to the inward issue when the link is created, in JIRA Wiki Markup
+
+#### 11. jira_unlinkIssues
+
+Delete an existing link between two JIRA issues in the JIRA Data Center edition instance.
+
+Parameters:
+- `linkId` (string, required): The id of the issue link to delete. Link ids are found in the `issuelinks` field of an issue (retrieve it via `jira_getIssue` with the `issuelinks` field).
+
+#### 12. jira_uploadAttachment
 
 Upload a local file as an attachment to a JIRA issue. Only registered when filesystem uploads are enabled (see [Attachment filesystem access](#attachment-filesystem-access-opt-in)).
 
@@ -288,7 +312,7 @@ Parameters:
 - `sourcePath` (string, required): Path to the file to upload, **relative to a server-configured upload directory**. Absolute paths and `..` segments are rejected; symlinks and non-regular files are refused.
 - `filename` (string, optional): Override for the attachment filename (defaults to the basename of `sourcePath`)
 
-#### 10. jira_downloadAttachment
+#### 13. jira_downloadAttachment
 
 Download attachment(s) from a JIRA issue, by issue key (optionally filtered by filename) or by a single attachment id. Returns the file content inline (base64 or text) — useful for inspecting a file or moving it elsewhere (e.g. re-uploading to a Confluence page). When filesystem downloads are enabled (see [Attachment filesystem access](#attachment-filesystem-access-opt-in)), it can also save into the server-configured download directory.
 

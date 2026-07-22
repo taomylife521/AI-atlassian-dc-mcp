@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { initializeRuntimeConfig } from '@atlassian-dc-mcp/common';
 import { JiraService } from '../jira-service.js';
-import { IssueService, OpenAPI, SearchService } from '../jira-client/index.js';
+import { IssueLinkService, IssueLinkTypeService, IssueService, OpenAPI, SearchService } from '../jira-client/index.js';
 import { request as __request } from '../jira-client/core/request.js';
 
 jest.mock('../jira-client/core/request.js', () => ({
@@ -22,6 +22,13 @@ jest.mock('../jira-client/index.js', () => ({
   },
   SearchService: {
     searchUsingSearchRequest: jest.fn(),
+  },
+  IssueLinkService: {
+    linkIssues: jest.fn(),
+    deleteIssueLink: jest.fn(),
+  },
+  IssueLinkTypeService: {
+    getIssueLinkTypes: jest.fn(),
   },
   OpenAPI: {
     BASE: '',
@@ -422,6 +429,104 @@ describe('JiraService', () => {
 
       const missingVars = JiraService.validateConfig();
       expect(missingVars).toEqual([]);
+    });
+  });
+
+  describe('getIssueLinkTypes', () => {
+    it('should return the available issue link types', async () => {
+      const mockLinkTypes = {
+        issueLinkTypes: [
+          { id: '10000', name: 'Blocks', inward: 'is blocked by', outward: 'blocks' },
+          { id: '10001', name: 'Relates', inward: 'relates to', outward: 'relates to' },
+        ],
+      };
+      (IssueLinkTypeService.getIssueLinkTypes as jest.Mock).mockResolvedValue(mockLinkTypes);
+
+      const result = await jiraService.getIssueLinkTypes();
+
+      expect(result.success).toBe(true);
+      expect(result.data).toBe(mockLinkTypes);
+      expect(IssueLinkTypeService.getIssueLinkTypes).toHaveBeenCalledWith();
+    });
+
+    it('should handle errors when issue linking is disabled', async () => {
+      (IssueLinkTypeService.getIssueLinkTypes as jest.Mock).mockRejectedValue(new Error('Issue linking is disabled'));
+
+      const result = await jiraService.getIssueLinkTypes();
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Issue linking is disabled');
+    });
+  });
+
+  describe('linkIssues', () => {
+    it('should create a link between two issues', async () => {
+      (IssueLinkService.linkIssues as jest.Mock).mockResolvedValue(undefined);
+
+      const result = await jiraService.linkIssues({
+        inwardIssueKey: 'PROJ-123',
+        outwardIssueKey: 'PROJ-456',
+        linkType: 'Blocks',
+      });
+
+      expect(result.success).toBe(true);
+      expect(IssueLinkService.linkIssues).toHaveBeenCalledWith({
+        type: { name: 'Blocks' },
+        inwardIssue: { key: 'PROJ-123' },
+        outwardIssue: { key: 'PROJ-456' },
+      });
+    });
+
+    it('should include an optional comment on the inward issue', async () => {
+      (IssueLinkService.linkIssues as jest.Mock).mockResolvedValue(undefined);
+
+      const result = await jiraService.linkIssues({
+        inwardIssueKey: 'PROJ-123',
+        outwardIssueKey: 'PROJ-456',
+        linkType: 'Relates',
+        comment: 'Linking these for tracking',
+      });
+
+      expect(result.success).toBe(true);
+      expect(IssueLinkService.linkIssues).toHaveBeenCalledWith({
+        type: { name: 'Relates' },
+        inwardIssue: { key: 'PROJ-123' },
+        outwardIssue: { key: 'PROJ-456' },
+        comment: { body: 'Linking these for tracking' },
+      });
+    });
+
+    it('should handle API errors gracefully', async () => {
+      (IssueLinkService.linkIssues as jest.Mock).mockRejectedValue(new Error('Issue link type not found'));
+
+      const result = await jiraService.linkIssues({
+        inwardIssueKey: 'PROJ-123',
+        outwardIssueKey: 'PROJ-456',
+        linkType: 'Nonexistent',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Issue link type not found');
+    });
+  });
+
+  describe('unlinkIssues', () => {
+    it('should delete an issue link by id', async () => {
+      (IssueLinkService.deleteIssueLink as jest.Mock).mockResolvedValue(undefined);
+
+      const result = await jiraService.unlinkIssues('10500');
+
+      expect(result.success).toBe(true);
+      expect(IssueLinkService.deleteIssueLink).toHaveBeenCalledWith('10500');
+    });
+
+    it('should handle errors when the link id is invalid', async () => {
+      (IssueLinkService.deleteIssueLink as jest.Mock).mockRejectedValue(new Error('Invalid issue link id'));
+
+      const result = await jiraService.unlinkIssues('bad-id');
+
+      expect(result.success).toBe(false);
+      expect(result.error).toBe('Invalid issue link id');
     });
   });
 });

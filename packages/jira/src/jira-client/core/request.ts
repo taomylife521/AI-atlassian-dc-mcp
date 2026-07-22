@@ -257,7 +257,11 @@ export const getResponseBody = async (response: Response): Promise<any> => {
                 const jsonTypes = ['application/json', 'application/problem+json']
                 const isJSON = jsonTypes.some(type => contentType.toLowerCase().startsWith(type));
                 if (isJSON) {
-                    return await response.json();
+                    // Some endpoints (e.g. POST /issueLink) return a success status with
+                    // Content-Type: application/json but an empty body; parsing that as JSON
+                    // throws. Read the text first and only parse when there is something to parse.
+                    const text = await response.text();
+                    return text ? JSON.parse(text) : undefined;
                 } else {
                     return await response.text();
                 }
