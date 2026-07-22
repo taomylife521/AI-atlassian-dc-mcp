@@ -137,6 +137,37 @@ Alternatively, you can use `JIRA_API_BASE_PATH` instead of `JIRA_HOST` to specif
 
    See [Configuration sources](#configuration-sources) for the full precedence chain.
 
+   ### Attachment filesystem access (opt-in)
+
+   By default this server is an API-only client: the attachment tools never read from or write to the local filesystem, and `jira_uploadAttachment` is **not even registered**. `jira_downloadAttachment` is always available but can only return file bytes inline (base64/text) — it cannot touch local disk.
+
+   Local filesystem access is opt-in and confined to operator-configured directories that the model cannot choose:
+
+   ```
+   # Enable each direction separately (default: false)
+   JIRA_ATTACHMENTS_UPLOAD_ENABLED=true
+   JIRA_ATTACHMENTS_DOWNLOAD_ENABLED=true
+
+   # Allowed roots (os path-separator list). Uploads may only read from these,
+   # downloads may only write into the first configured download root.
+   JIRA_ATTACHMENTS_UPLOAD_ROOTS=/srv/jira-exchange/in
+   JIRA_ATTACHMENTS_DOWNLOAD_ROOTS=/srv/jira-exchange/out
+
+   # Convenience: a single dedicated exchange directory used as both roots
+   JIRA_ATTACHMENTS_DIR=/srv/jira-exchange
+
+   # Hard per-file size limits in bytes (default: 25 MiB)
+   JIRA_ATTACHMENTS_MAX_UPLOAD_BYTES=26214400
+   JIRA_ATTACHMENTS_MAX_DOWNLOAD_BYTES=26214400
+   ```
+
+   Guardrails applied when enabled:
+   - A direction only activates when its flag is set **and** at least one root resolves; otherwise the tool stays disabled and a warning is logged.
+   - Roots are canonicalized (realpath) at startup. Requested paths are relative to a root; absolute paths and `..` segments are rejected, and a path that escapes a root through a symlinked directory is refused.
+   - Uploads reject symlinks and non-regular files (FIFOs, devices, directories).
+   - Downloads never overwrite an existing file (including a symlink) — they use an exclusive write.
+   - Both directions enforce the configured hard size limit.
+
    To create a personal access token:
   - In Jira, select your profile picture at the top right
   - Select **Personal Access Tokens**
@@ -250,22 +281,22 @@ Parameters:
 
 #### 9. jira_uploadAttachment
 
-Upload a local file as an attachment to a JIRA issue.
+Upload a local file as an attachment to a JIRA issue. Only registered when filesystem uploads are enabled (see [Attachment filesystem access](#attachment-filesystem-access-opt-in)).
 
 Parameters:
 - `issueKey` (string, required): The issue key (e.g., "PROJECT-123")
-- `filePath` (string, required): Absolute local filesystem path of the file to upload
-- `filename` (string, optional): Override for the attachment filename (defaults to the basename of `filePath`)
+- `sourcePath` (string, required): Path to the file to upload, **relative to a server-configured upload directory**. Absolute paths and `..` segments are rejected; symlinks and non-regular files are refused.
+- `filename` (string, optional): Override for the attachment filename (defaults to the basename of `sourcePath`)
 
 #### 10. jira_downloadAttachment
 
-Download attachment(s) from a JIRA issue, by issue key (optionally filtered by filename) or by a single attachment id. Can save to a local path and/or return the file content inline (base64 or text) — useful for inspecting a file or moving it elsewhere (e.g. re-uploading to a Confluence page).
+Download attachment(s) from a JIRA issue, by issue key (optionally filtered by filename) or by a single attachment id. Returns the file content inline (base64 or text) — useful for inspecting a file or moving it elsewhere (e.g. re-uploading to a Confluence page). When filesystem downloads are enabled (see [Attachment filesystem access](#attachment-filesystem-access-opt-in)), it can also save into the server-configured download directory.
 
 Parameters:
 - `issueKey` (string, optional): The issue key (e.g., "PROJECT-123") whose attachment(s) to download. Provide either `issueKey` or `attachmentId`.
 - `attachmentId` (string, optional): Numeric id of a single attachment to download. Provide either `attachmentId` or `issueKey`.
 - `filename` (string, optional): When using `issueKey`, download only attachments with this exact filename. If omitted, all attachments on the issue are downloaded.
-- `saveDir` (string, optional): Absolute local directory to save the attachment(s) into. The attachment filename is used as the file name. Preferred when downloading multiple files.
-- `savePath` (string, optional): Absolute local file path to save a single attachment to. Overrides `saveDir`.
-- `returnContent` (`none` | `base64` | `text`, optional): Whether to embed the file bytes in the response. Defaults to `none`. Combine with `saveDir`/`savePath` to also save to disk.
-- `maxInlineBytes` (number, optional): Maximum bytes to embed inline when `returnContent` is `base64`/`text`. Larger files are saved (if a path is given) but not embedded. Defaults to 1 MiB.
+- `returnContent` (`none` | `base64` | `text`, optional): Whether to embed the file bytes in the response. Defaults to `none`.
+- `maxInlineBytes` (number, optional): Maximum bytes to embed inline when `returnContent` is `base64`/`text`. Larger files are omitted from the inline content. Defaults to 1 MiB.
+- `save` (boolean, optional): Save the attachment(s) into the server-configured download directory. Requires filesystem downloads to be enabled; existing files are never overwritten. *(Only available when downloads are enabled.)*
+- `saveName` (string, optional): File name (no directories) to use when saving a single attachment; defaults to the attachment's own name. *(Only available when downloads are enabled.)*

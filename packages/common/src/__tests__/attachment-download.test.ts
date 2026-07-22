@@ -1,34 +1,37 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { downloadAttachment, resolveSafeChildPath } from '../attachment-download.js';
+import { downloadAttachment } from '../attachment-download.js';
 
-function mockFetchOnce(body: Buffer, init?: { ok?: boolean; status?: number; statusText?: string; contentType?: string }) {
+function mockFetchOnce(
+  body: Buffer,
+  init?: { ok?: boolean; status?: number; statusText?: string; contentType?: string; contentLength?: string; stream?: boolean },
+) {
   const ok = init?.ok ?? true;
-  global.fetch = jest.fn().mockResolvedValue({
+  const headers = new Map<string, string>();
+  if (init?.contentType) headers.set('content-type', init.contentType);
+  if (init?.contentLength) headers.set('content-length', init.contentLength);
+
+  const response: Record<string, unknown> = {
     ok,
     status: init?.status ?? (ok ? 200 : 500),
     statusText: init?.statusText ?? (ok ? 'OK' : 'Error'),
-    headers: { get: (name: string) => (name.toLowerCase() === 'content-type' ? init?.contentType ?? null : null) },
+    headers: { get: (name: string) => headers.get(name.toLowerCase()) ?? null },
     arrayBuffer: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength),
-  }) as unknown as typeof fetch;
+  };
+
+  if (init?.stream) {
+    let sent = false;
+    response.body = {
+      getReader: () => ({
+        read: async () => (sent ? { done: true, value: undefined } : ((sent = true), { done: false, value: new Uint8Array(body) })),
+        cancel: async () => undefined,
+      }),
+    };
+  }
+
+  global.fetch = jest.fn().mockResolvedValue(response) as unknown as typeof fetch;
 }
-
-describe('resolveSafeChildPath', () => {
-  it('joins the basename of the filename to the directory', () => {
-    expect(resolveSafeChildPath('/tmp/out', 'file.txt')).toBe(path.resolve('/tmp/out', 'file.txt'));
-  });
-
-  it('strips directory components from the filename (traversal defense)', () => {
-    expect(resolveSafeChildPath('/tmp/out', '../../etc/passwd')).toBe(path.resolve('/tmp/out', 'passwd'));
-    expect(resolveSafeChildPath('/tmp/out', '/etc/passwd')).toBe(path.resolve('/tmp/out', 'passwd'));
-  });
-
-  it('rejects filenames that resolve to the directory itself', () => {
-    expect(() => resolveSafeChildPath('/tmp/out', '..')).toThrow();
-    expect(() => resolveSafeChildPath('/tmp/out', '.')).toThrow();
-  });
-});
 
 describe('downloadAttachment', () => {
   let tmpDir: string;
@@ -42,23 +45,35 @@ describe('downloadAttachment', () => {
     jest.restoreAllMocks();
   });
 
-  it('saves the file to saveDir using the filename and reports metadata', async () => {
+  it('writes the file to the provided destination and reports metadata', async () => {
     mockFetchOnce(Buffer.from('hello world'), { contentType: 'text/plain' });
+    const destination = path.join(tmpDir, 'note.txt');
 
     const result = await downloadAttachment({
       url: 'https://host/download/x',
       token: 'tok',
       filename: 'note.txt',
-      options: { saveDir: tmpDir },
+      options: { destination },
     });
 
     expect(global.fetch).toHaveBeenCalledWith('https://host/download/x', {
       headers: { Authorization: 'Bearer tok', 'X-Atlassian-Token': 'nocheck' },
     });
-    expect(result.savedPath).toBe(path.join(tmpDir, 'note.txt'));
+    expect(result.savedPath).toBe(destination);
     expect(result.size).toBe(11);
-    expect(fs.readFileSync(result.savedPath!, 'utf-8')).toBe('hello world');
+    expect(fs.readFileSync(destination, 'utf-8')).toBe('hello world');
     expect(result.content).toBeUndefined();
+  });
+
+  it('refuses to overwrite an existing destination file', async () => {
+    mockFetchOnce(Buffer.from('new content'));
+    const destination = path.join(tmpDir, 'exists.txt');
+    fs.writeFileSync(destination, 'original');
+
+    await expect(
+      downloadAttachment({ url: 'https://host/x', token: 'tok', filename: 'exists.txt', options: { destination } }),
+    ).rejects.toThrow();
+    expect(fs.readFileSync(destination, 'utf-8')).toBe('original');
   });
 
   it('returns text content inline when requested', async () => {
@@ -103,6 +118,30 @@ describe('downloadAttachment', () => {
 
     expect(result.content).toBeUndefined();
     expect(result.contentOmittedReason).toContain('exceeds inline cap');
+  });
+
+  it('rejects early when content-length exceeds the download cap', async () => {
+    mockFetchOnce(Buffer.from('1234567890'), { contentLength: '10' });
+
+    await expect(
+      downloadAttachment({ url: 'https://host/x', token: 'tok', filename: 'big.bin', options: { maxDownloadBytes: 5 } }),
+    ).rejects.toThrow('exceeds the configured download limit');
+  });
+
+  it('aborts a streamed body that exceeds the download cap', async () => {
+    mockFetchOnce(Buffer.from('1234567890'), { stream: true });
+
+    await expect(
+      downloadAttachment({ url: 'https://host/x', token: 'tok', filename: 'big.bin', options: { maxDownloadBytes: 5 } }),
+    ).rejects.toThrow('exceeds the configured download limit');
+  });
+
+  it('enforces the cap on a buffered body without content-length', async () => {
+    mockFetchOnce(Buffer.from('1234567890'));
+
+    await expect(
+      downloadAttachment({ url: 'https://host/x', token: 'tok', filename: 'big.bin', options: { maxDownloadBytes: 5 } }),
+    ).rejects.toThrow('exceeds the configured download limit');
   });
 
   it('throws when the response is not ok', async () => {

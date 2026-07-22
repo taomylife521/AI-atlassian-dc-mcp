@@ -1,5 +1,5 @@
-import { mkdir, writeFile } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, resolve, sep } from 'node:path';
+import { writeFile } from 'node:fs/promises';
+import { basename } from 'node:path';
 
 /**
  * How the downloaded bytes should be returned to the caller inline, in addition
@@ -14,14 +14,19 @@ export type AttachmentContentEncoding = 'none' | 'base64' | 'text';
 export const DEFAULT_MAX_INLINE_BYTES = 1_048_576;
 
 export interface AttachmentDownloadOptions {
-  /** Explicit destination file path. Takes precedence over saveDir. */
-  savePath?: string;
-  /** Destination directory; the (sanitized) filename is appended to it. */
-  saveDir?: string;
+  /**
+   * Absolute, already-validated destination path to write the bytes to. Resolving
+   * and sandboxing this path is the caller's responsibility (see the attachment
+   * gateway); the file is written with an exclusive flag and never overwrites an
+   * existing file. When omitted, nothing is written to disk.
+   */
+  destination?: string;
   /** Whether and how to embed the bytes in the response. Defaults to `none`. */
   returnContent?: AttachmentContentEncoding;
   /** Maximum bytes to embed inline when returnContent is not `none`. */
   maxInlineBytes?: number;
+  /** Hard cap on the number of downloaded bytes. Exceeding it aborts the download. */
+  maxDownloadBytes?: number;
 }
 
 export interface AttachmentDownloadResult {
@@ -47,39 +52,47 @@ async function resolveToken(token: string | (() => string | undefined)): Promise
 }
 
 /**
- * Resolves a destination path for a downloaded file inside `saveDir`, guarding
- * against path traversal: only the basename of `filename` is used, and the
- * resolved path must stay within `saveDir`.
+ * Reads the response body, enforcing `cap` (when set) without buffering more than
+ * the limit. Streams chunk-by-chunk when a web ReadableStream is available and
+ * falls back to a buffered read with a post-check otherwise.
  */
-export function resolveSafeChildPath(saveDir: string, filename: string): string {
-  const safeName = basename(filename);
-  if (!safeName || safeName === '.' || safeName === '..') {
-    throw new Error(`Unsafe attachment filename: "${filename}"`);
+async function readBodyWithCap(response: Response, cap: number | undefined, filename: string): Promise<Buffer> {
+  const body = response.body as ReadableStream<Uint8Array> | null;
+  if (cap !== undefined && body && typeof body.getReader === 'function') {
+    const reader = body.getReader();
+    const chunks: Buffer[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      total += value.byteLength;
+      if (total > cap) {
+        await reader.cancel();
+        throw new Error(`Attachment "${filename}" exceeds the configured download limit of ${cap} bytes`);
+      }
+      chunks.push(Buffer.from(value));
+    }
+    return Buffer.concat(chunks);
   }
-  const baseDir = resolve(saveDir);
-  const target = resolve(baseDir, safeName);
-  if (target !== baseDir && !target.startsWith(baseDir + sep)) {
-    throw new Error(`Refusing to write outside of target directory: "${filename}"`);
-  }
-  return target;
-}
 
-function resolveDestination(filename: string, options: AttachmentDownloadOptions): string | undefined {
-  if (options.savePath) {
-    return isAbsolute(options.savePath) ? options.savePath : resolve(options.savePath);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  if (cap !== undefined && buffer.length > cap) {
+    throw new Error(
+      `Attachment "${filename}" size ${buffer.length} bytes exceeds the configured download limit of ${cap} bytes`,
+    );
   }
-  if (options.saveDir) {
-    return resolveSafeChildPath(options.saveDir, filename);
-  }
-  return undefined;
+  return buffer;
 }
 
 /**
  * Downloads a file from an authenticated Atlassian Data Center URL using a
- * Bearer token, optionally writing it to disk and/or returning its bytes inline.
+ * Bearer token, optionally writing it to a pre-validated destination and/or
+ * returning its bytes inline.
  *
- * The bytes are buffered in memory; this is intended for typical attachment
- * sizes rather than very large files.
+ * Writing uses an exclusive flag, so an existing file (including a symlink) is
+ * never overwritten.
  */
 export async function downloadAttachment(params: {
   url: string;
@@ -104,7 +117,15 @@ export async function downloadAttachment(params: {
     throw new Error(`Failed to download attachment "${filename}": ${response.status} ${response.statusText}`);
   }
 
-  const buffer = Buffer.from(await response.arrayBuffer());
+  const cap = options.maxDownloadBytes;
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (cap !== undefined && Number.isFinite(declaredLength) && declaredLength > cap) {
+    throw new Error(
+      `Attachment "${filename}" size ${declaredLength} bytes exceeds the configured download limit of ${cap} bytes`,
+    );
+  }
+
+  const buffer = await readBodyWithCap(response, cap, filename);
   const resolvedMediaType = mediaType ?? response.headers.get('content-type') ?? undefined;
 
   const result: AttachmentDownloadResult = {
@@ -113,18 +134,16 @@ export async function downloadAttachment(params: {
     size: buffer.length,
   };
 
-  const destination = resolveDestination(filename, options);
-  if (destination) {
-    await mkdir(dirname(destination), { recursive: true });
-    await writeFile(destination, buffer);
-    result.savedPath = destination;
+  if (options.destination) {
+    await writeFile(options.destination, buffer, { flag: 'wx' });
+    result.savedPath = options.destination;
   }
 
   const returnContent = options.returnContent ?? 'none';
   if (returnContent !== 'none') {
-    const cap = options.maxInlineBytes ?? DEFAULT_MAX_INLINE_BYTES;
-    if (buffer.length > cap) {
-      result.contentOmittedReason = `File size ${buffer.length} bytes exceeds inline cap of ${cap} bytes`;
+    const inlineCap = options.maxInlineBytes ?? DEFAULT_MAX_INLINE_BYTES;
+    if (buffer.length > inlineCap) {
+      result.contentOmittedReason = `File size ${buffer.length} bytes exceeds inline cap of ${inlineCap} bytes`;
     } else {
       result.content = returnContent === 'base64' ? buffer.toString('base64') : buffer.toString('utf-8');
       result.encoding = returnContent;

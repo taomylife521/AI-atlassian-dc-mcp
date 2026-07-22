@@ -1,5 +1,8 @@
+import type { AttachmentGatewaySide } from '@atlassian-dc-mcp/common';
 import { JiraService } from '../jira-service.js';
 import { AttachmentService, IssueService } from '../jira-client/index.js';
+
+const DISABLED_DOWNLOAD: AttachmentGatewaySide = { enabled: false, roots: [], maxBytes: 25 * 1024 * 1024 };
 
 jest.mock('../jira-client/index.js', () => ({
   AttachmentService: {
@@ -42,7 +45,7 @@ describe('JiraService.downloadAttachments', () => {
     });
     mockFetchText('pdf-bytes');
 
-    const result = await service.downloadAttachments({ attachmentId: '10001', options: { returnContent: 'text' } });
+    const result = await service.downloadAttachments({ attachmentId: '10001', returnContent: 'text', downloadSide: DISABLED_DOWNLOAD });
 
     expect(AttachmentService.getAttachment).toHaveBeenCalledWith('10001');
     expect(global.fetch).toHaveBeenCalledWith(
@@ -65,7 +68,7 @@ describe('JiraService.downloadAttachments', () => {
     });
     mockFetchText('x');
 
-    const result = await service.downloadAttachments({ issueKey: 'PROJ-1' });
+    const result = await service.downloadAttachments({ issueKey: 'PROJ-1', downloadSide: DISABLED_DOWNLOAD });
 
     expect(IssueService.getIssue).toHaveBeenCalledWith('PROJ-1', undefined, ['attachment']);
     expect(result.success).toBe(true);
@@ -83,7 +86,7 @@ describe('JiraService.downloadAttachments', () => {
     });
     mockFetchText('x');
 
-    const result = await service.downloadAttachments({ issueKey: 'PROJ-1', filename: 'b.txt' });
+    const result = await service.downloadAttachments({ issueKey: 'PROJ-1', filename: 'b.txt', downloadSide: DISABLED_DOWNLOAD });
 
     expect(result.success).toBe(true);
     expect(result.data!.count).toBe(1);
@@ -92,7 +95,7 @@ describe('JiraService.downloadAttachments', () => {
   });
 
   it('fails when neither attachmentId nor issueKey is provided', async () => {
-    const result = await service.downloadAttachments({});
+    const result = await service.downloadAttachments({ downloadSide: DISABLED_DOWNLOAD });
     expect(result.success).toBe(false);
     expect(result.error).toContain('attachmentId or issueKey');
   });
@@ -100,7 +103,7 @@ describe('JiraService.downloadAttachments', () => {
   it('fails when an issue has no matching attachment', async () => {
     (IssueService.getIssue as jest.Mock).mockResolvedValue({ fields: { attachment: [] } });
 
-    const result = await service.downloadAttachments({ issueKey: 'PROJ-1', filename: 'x.txt' });
+    const result = await service.downloadAttachments({ issueKey: 'PROJ-1', filename: 'x.txt', downloadSide: DISABLED_DOWNLOAD });
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('No attachment named "x.txt"');

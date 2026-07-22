@@ -1,6 +1,6 @@
-import { connectServer, createMcpServer, formatToolResponse, initializeRuntimeConfig } from '@atlassian-dc-mcp/common';
+import { connectServer, createMcpServer, formatToolResponse, initializeRuntimeConfig, resolveAttachmentGateway } from '@atlassian-dc-mcp/common';
 import { JiraService, jiraToolSchemas } from './jira-service.js';
-import { getDefaultPageSize, getJiraRuntimeConfig } from './config.js';
+import { getDefaultPageSize, getJiraRuntimeConfig, JIRA_PRODUCT } from './config.js';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
@@ -117,26 +117,46 @@ server.tool(
   }
 );
 
-server.tool(
-  "jira_uploadAttachment",
-  `Upload a local file as an attachment to a JIRA issue in the ${jiraInstanceType}`,
-  jiraToolSchemas.uploadAttachment,
-  async ({ issueKey, filePath, filename }) => {
-    const result = await jiraService.uploadAttachment(issueKey, filePath, filename);
-    return formatToolResponse(result);
-  }
-);
+const attachmentGateway = resolveAttachmentGateway(JIRA_PRODUCT);
 
+// Filesystem-reading upload is only registered when the operator explicitly enables it.
+if (attachmentGateway.upload.enabled) {
+  server.tool(
+    "jira_uploadAttachment",
+    `Upload a local file as an attachment to a JIRA issue in the ${jiraInstanceType}. The file must live under the server-configured upload directory; the path is given relative to that directory.`,
+    jiraToolSchemas.uploadAttachment,
+    async ({ issueKey, sourcePath, filename }) => {
+      const result = await jiraService.uploadAttachment(issueKey, sourcePath, attachmentGateway.upload, filename);
+      return formatToolResponse(result);
+    }
+  );
+}
+
+// Download always returns content inline (no filesystem access). Saving to disk is
+// only offered when the operator enables it, and is confined to the configured directory.
+const downloadSaveEnabled = attachmentGateway.download.enabled;
 server.tool(
   "jira_downloadAttachment",
-  `Download attachment(s) from a JIRA issue in the ${jiraInstanceType}, by issue key (optionally filtered by filename) or by a single attachment id. Can save to a local path and/or return the file content inline (base64 or text). Useful for inspecting a file or moving it elsewhere (e.g. re-uploading to a Confluence page).`,
-  jiraToolSchemas.downloadAttachment,
-  async ({ issueKey, attachmentId, filename, saveDir, savePath, returnContent, maxInlineBytes }) => {
+  `Download attachment(s) from a JIRA issue in the ${jiraInstanceType}, by issue key (optionally filtered by filename) or by a single attachment id. Returns the file content inline (base64 or text). Useful for inspecting a file or moving it elsewhere (e.g. re-uploading to a Confluence page).${downloadSaveEnabled ? ' Can also save into the server-configured download directory; existing files are never overwritten.' : ' Saving to local disk is disabled on this server.'}`,
+  { ...jiraToolSchemas.downloadAttachment, ...(downloadSaveEnabled ? jiraToolSchemas.downloadAttachmentSaveFields : {}) },
+  async ({ issueKey, attachmentId, filename, returnContent, maxInlineBytes, save, saveName }: {
+    issueKey?: string;
+    attachmentId?: string;
+    filename?: string;
+    returnContent?: 'none' | 'base64' | 'text';
+    maxInlineBytes?: number;
+    save?: boolean;
+    saveName?: string;
+  }) => {
     const result = await jiraService.downloadAttachments({
       issueKey,
       attachmentId,
       filename,
-      options: { saveDir, savePath, returnContent, maxInlineBytes },
+      save,
+      saveName,
+      returnContent,
+      maxInlineBytes,
+      downloadSide: attachmentGateway.download,
     });
     return formatToolResponse(result);
   }
